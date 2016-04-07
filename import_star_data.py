@@ -32,6 +32,10 @@ OFFICER_RACE_MAPPING = {
 }
 
 
+class MergeException(Exception):
+    pass
+
+
 def fix_date(date):
     if date.year > datetime.datetime.now().year:
         date = date.replace(year=date.year-100)
@@ -51,24 +55,31 @@ class Command(BaseCommand):
 
         officers = Officer.objects.filter(**start_kw)
 
+        count = officers.count()
+        if count == 1:
+            return officers.first()
+
+        if kwargs.get('appt_date'):
+
+            if officers.exclude(appt_date__isnull=True).count() == count:
+                officers = officers.filter(appt_date=kwargs['appt_date'])
+
+            if officers.filter(appt_date=kwargs['appt_date']).count() == 1:
+                return officers.filter(appt_date=kwargs['appt_date']).first()
+
+        if officers.filter(star__in=kwargs['stars']).count() > 1:
+            officers = officers.filter(star__in=kwargs['stars'])
+            print("merge", officers.values('id', 'officer_last', 'officer_first', 'star'), kwargs['stars'])
+            self.officers = officers
+            raise MergeException
+
         if officers:
             count = officers.count()
-
-            if count == 1:
-                return officers.first()
-
-            if kwargs.get('appt_date'):
-
-                if officers.exclude(appt_date__isnull=True).count() == count:
-                    officers = officers.filter(appt_date=kwargs['appt_date'])
-
-                if officers.filter(appt_date=kwargs['appt_date']).count() == 1:
-                    return officers.filter(appt_date=kwargs['appt_date']).first()
 
             for add_filter in order_of_contrain:
                 constrain = kwargs.get(add_filter, None)
 
-                if constrain and officers.filter(**{"{field}__iexact".format(field=add_filter): constrain}):
+                if constrain:
                     officers = officers.filter(**{"{field}__iexact".format(field=add_filter): constrain})
 
                 count = officers.count()
@@ -157,9 +168,11 @@ class Command(BaseCommand):
                 else:
                     appt_date = None
 
+                stars = []
                 for i in range(STARS_START, STARS_END):
                     if row[i]:
                         officers_last_star_num = row[i]
+                        stars.append(row[i])
 
                 officer = False
                 try:
@@ -169,7 +182,8 @@ class Command(BaseCommand):
                         gender=row[GENDER],
                         race=row[RACE],
                         star=officers_last_star_num,
-                        appt_date=appt_date
+                        appt_date=appt_date,
+                        stars=stars
                     )
 
                     found_counter += 1
@@ -181,6 +195,11 @@ class Command(BaseCommand):
                     writer.writerow([0] + row + [possible_matches])
                     if options.get('debug'):
                         print(row)
+                    continue
+
+                except MergeException:
+                    possible_matches = ";".join(["%d" % x for x in self.officers.values_list('id', flat=True)])
+                    writer.writerow([-2] + row + [possible_matches])
                     continue
 
                 except Officer.DoesNotExist:
